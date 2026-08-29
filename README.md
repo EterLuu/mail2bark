@@ -1,0 +1,101 @@
+# mail2bark
+
+mail2bark 是一个面向设备和监控系统的告警网关：它接收 SMTP 邮件，提取告警重点，再发送到 Bark，让告警直接出现在 iPhone 通知栏。
+
+## Bark 是什么
+
+Bark 是一个开源的 iOS 推送工具：在 iPhone 上安装 Bark App 后会生成一个 Device Key，任何设备都可以通过一个简单的 HTTP 请求把消息推送到这台 iPhone。
+
+- Bark 项目地址：<https://github.com/Finb/Bark>
+- 官方推送服务：`https://api.day.app`，免费，适合个人使用
+- 也可以自建 Bark Server，mail2bark 支持填写任意 Bark 服务器地址
+
+## 快速开始
+
+```sh
+cp .env.example .env
+docker compose up -d --build
+```
+
+打开 `http://127.0.0.1:8080/` 进入管理界面。默认不启用登录，适合内网部署；如果服务需要暴露到公网，请设置 `MAIL2BARK_ADMIN_KEY`，并同时使用防火墙或反向代理限制访问。
+
+## 配置发送来源
+
+先在 iPhone 上安装 Bark App，打开后复制自己的 Device Key。
+
+然后按顺序在管理界面完成两步配置：
+
+1. 添加 Bark 设备
+   - 名称：例如“办公室 iPhone”
+   - 服务器：官方服务填 `https://api.day.app`，自建服务填自己的地址
+   - Device Key：从 Bark App 复制
+2. 创建接入 API Key
+   - 来源名称：例如 `idrac-r740`
+   - 允许的来源 IP：设备或监控服务的出口 IP/CIDR
+   - 选择刚才添加的 Bark 设备
+
+创建完成后，系统会自动生成一个内部收件地址，例如 `idrac-r740-7f3c@notify.internal`，并且 API Key 只显示一次，请立即保存。
+
+在 iDRAC、IPMI、QNAP 或监控服务中配置 SMTP：
+
+```text
+SMTP 服务器：运行 mail2bark 的主机地址
+SMTP 端口：默认 2525；如修改过端口映射，填写实际端口
+SMTP 用户名：mail2bark
+SMTP 密码：创建 API Key 时生成的 Key
+收件地址：页面生成的内部地址
+```
+
+SMTP 用户名始终是 `mail2bark`。Key 同时绑定来源 IP、内部收件地址和 Bark 设备，邮件必须同时通过全部校验才会被接收；未授权客户端、错误 Key、未知收件地址和外部收件地址都会被拒绝。填写单个 IP 时，系统会自动转换成 `/32` 或 `/128`。
+
+### 使用 API 配置
+
+先创建 Bark 设备，把返回的 ID 用于创建 Key：
+
+```sh
+curl -X POST http://127.0.0.1:8080/v1/destinations \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"办公室 iPhone","server":"https://api.day.app","device_key":"BARK_KEY","group":"infrastructure","sound":"alarm","level":"active"}'
+
+curl -X POST http://127.0.0.1:8080/v1/smtp/credentials \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"idrac-r740","allowed_ips":["192.168.10.30/32"],"destination_id":1}'
+```
+
+如果设置了管理员密钥，所有 API 请求都需要增加：
+
+```http
+Authorization: Bearer <MAIL2BARK_ADMIN_KEY>
+```
+
+## 邮件与通知
+
+服务优先读取纯文本邮件；没有纯文本时，会自动把 HTML 转换为纯文本。邮件中的级别、设备、组件、事件和时间会被提取到通知前部，正文会控制在适合 iOS 通知栏的长度，完整原始邮件仍保存在 SQLite 中。
+
+邮件写入数据库成功后，SMTP 才会收到 `250 OK`。Bark 网络错误、超时、429 和 5xx 会自动重试；多次失败后进入死信，可在“邮件记录”页面手动重新投递。
+
+## HTTPS 与 SMTP TLS
+
+默认 `docker compose up` 只启动 mail2bark，不启动 Caddy。需要管理界面 HTTPS 时再启用：
+
+```sh
+MAIL2BARK_DOMAIN=notify.example.com docker compose --profile tls up -d
+```
+
+SMTP TLS 由 mail2bark 直接提供。默认 `/certs` 使用 Docker named volume，不要求宿主机存在 `certs` 目录。设置以下参数即可启用相应监听：
+
+```env
+MAIL2BARK_TLS_CERT=/certs/fullchain.pem
+MAIL2BARK_TLS_KEY=/certs/privkey.pem
+MAIL2BARK_SMTP_STARTTLS_ADDR=:587
+MAIL2BARK_SMTP_TLS_ADDR=:465
+```
+
+## 数据与接口
+
+- `GET /v1/messages`：查看最近邮件及投递状态
+- `POST /v1/messages/{id}/retry`：重新投递死信
+- `GET/POST /v1/smtp/credentials`：查看或创建接入 API Key
+- `GET/POST /v1/destinations`：查看或创建 Bark 设备
+
+SQLite 使用 WAL 和 FULL synchronous。数据库文件位于 `/data/mail2bark.db`，建议将 `/data` 持久化到 Docker volume 或主机备份目录。

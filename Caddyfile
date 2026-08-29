@@ -1,0 +1,3 @@
+{$MAIL2BARK_DOMAIN} {
+  reverse_proxy mail2bark:8080
+}

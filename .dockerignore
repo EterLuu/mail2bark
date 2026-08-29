@@ -1,0 +1,7 @@
+.git
+*.db
+certs
+data
+dist
+.env
+README.md

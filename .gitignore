@@ -1,0 +1,31 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# TLS certificates and keys
+certs/
+*.pem
+*.key
+*.crt
+
+# Build output
+/dist/
+/bin/
+/mail2bark
+
+# Go and test artifacts
+coverage.out
+*.test
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.log
