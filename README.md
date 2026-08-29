@@ -91,6 +91,40 @@ MAIL2BARK_SMTP_STARTTLS_ADDR=:587
 MAIL2BARK_SMTP_TLS_ADDR=:465
 ```
 
+## 子路径反向代理
+
+管理界面可以挂载到任意子路径。例如使用 `https://example.com/mail2bark/` 时，可选择以下任一代理模式。
+
+保留前缀转发时，mail2bark 需要知道该前缀：
+
+```env
+MAIL2BARK_BASE_PATH=/mail2bark
+```
+
+```caddyfile
+example.com {
+    redir /mail2bark /mail2bark/ 308
+
+    handle /mail2bark/* {
+        reverse_proxy mail2bark:8080
+    }
+}
+```
+
+由代理剥离前缀时，不要求设置 `MAIL2BARK_BASE_PATH`：
+
+```caddyfile
+example.com {
+    redir /mail2bark /mail2bark/ 308
+
+    handle_path /mail2bark/* {
+        reverse_proxy mail2bark:8080
+    }
+}
+```
+
+`/mail2bark` 可以替换为其他路径。服务在配置子路径后仍保留根路由，因此两种模式也可以随时切换。根路径的 `/healthz` 和 `/readyz` 始终可用于容器健康检查。SMTP 端口不是 HTTP 流量，仍需直接映射或使用 TCP 代理。
+
 ## 数据与接口
 
 - `GET /v1/messages`：查看最近邮件及投递状态

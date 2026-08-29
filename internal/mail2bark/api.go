@@ -16,6 +16,7 @@ type API struct {
 	Store           *Store
 	AdminKey        string
 	RecipientDomain string
+	BasePath        string
 	Log             interface{}
 }
 
@@ -32,7 +33,30 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/v1/destinations", a.destinations)
 	mux.HandleFunc("/v1/messages", a.messages)
 	mux.HandleFunc("/v1/messages/", a.messageAction)
-	return mux
+
+	basePath := normalizeBasePath(a.BasePath)
+	if basePath == "" {
+		return mux
+	}
+
+	prefixed := http.StripPrefix(basePath, mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == basePath {
+			target := basePath + "/"
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, basePath+"/") {
+			prefixed.ServeHTTP(w, r)
+			return
+		}
+		// Keep root routes available for proxies that strip the configured
+		// prefix and for container-local health checks.
+		mux.ServeHTTP(w, r)
+	})
 }
 func (a *API) authorized(r *http.Request) bool {
 	if a.AdminKey == "" {
@@ -93,9 +117,9 @@ func (a *API) credentials(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 200, out)
 	case http.MethodPost:
 		var in struct {
-		Name           string   `json:"name"`
-		AllowedIPs     []string `json:"allowed_ips"`
-			DestinationID int64 `json:"destination_id"`
+			Name          string   `json:"name"`
+			AllowedIPs    []string `json:"allowed_ips"`
+			DestinationID int64    `json:"destination_id"`
 		}
 		if json.NewDecoder(r.Body).Decode(&in) != nil || strings.TrimSpace(in.Name) == "" {
 			jsonResponse(w, 400, map[string]string{"error": "请填写来源名称"})

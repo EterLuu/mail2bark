@@ -7,6 +7,8 @@ const state = {
   },
 };
 
+const basePath = new URL('.', document.currentScript.src).pathname.replace(/\/$/, '');
+
 const views = {
   overview: '概览',
   messages: '邮件记录',
@@ -37,7 +39,7 @@ function esc(value) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(`${basePath}/${path.replace(/^\/+/, '')}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });

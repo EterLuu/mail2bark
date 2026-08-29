@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -21,15 +22,24 @@ import (
 )
 
 type Config struct {
-	HTTPAddr       string
-	SMTPAddr       string
-	SMTPTLSAddr    string
-	SMTPStartTLS   string
-	DBPath         string
-	AdminKey       string
+	HTTPAddr        string
+	SMTPAddr        string
+	SMTPTLSAddr     string
+	SMTPStartTLS    string
+	DBPath          string
+	AdminKey        string
 	RecipientDomain string
-	MaxMessageSize int64
-	BarkTimeout    time.Duration
+	MaxMessageSize  int64
+	BarkTimeout     time.Duration
+	BasePath        string
+}
+
+func normalizeBasePath(value string) string {
+	cleaned := path.Clean("/" + strings.TrimSpace(value))
+	if cleaned == "/" || cleaned == "." {
+		return ""
+	}
+	return cleaned
 }
 
 func loadConfig() Config {
@@ -54,7 +64,8 @@ func loadConfig() Config {
 		SMTPTLSAddr: get("MAIL2BARK_SMTP_TLS_ADDR", ""), SMTPStartTLS: get("MAIL2BARK_SMTP_STARTTLS_ADDR", ""),
 		DBPath: get("MAIL2BARK_DB_PATH", "/data/mail2bark.db"), AdminKey: os.Getenv("MAIL2BARK_ADMIN_KEY"),
 		RecipientDomain: get("MAIL2BARK_RECIPIENT_DOMAIN", "notify.internal"),
-		MaxMessageSize: max, BarkTimeout: timeout,
+		MaxMessageSize:  max, BarkTimeout: timeout,
+		BasePath: normalizeBasePath(os.Getenv("MAIL2BARK_BASE_PATH")),
 	}
 }
 
@@ -103,7 +114,7 @@ func Run() {
 		}(s)
 	}
 
-	api := &API{Store: store, AdminKey: cfg.AdminKey, RecipientDomain: cfg.RecipientDomain, Log: log}
+	api := &API{Store: store, AdminKey: cfg.AdminKey, RecipientDomain: cfg.RecipientDomain, BasePath: cfg.BasePath, Log: log}
 	httpServer := &http.Server{Addr: cfg.HTTPAddr, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("http server listening", "addr", cfg.HTTPAddr)
