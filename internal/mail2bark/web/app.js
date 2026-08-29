@@ -12,7 +12,7 @@ const basePath = new URL('.', document.currentScript.src).pathname.replace(/\/$/
 const views = {
   overview: '概览',
   messages: '邮件记录',
-  credentials: '接入 API Key',
+  credentials: '接入列表',
   destinations: 'Bark 设备',
 };
 
@@ -149,7 +149,13 @@ function render() {
         `<td>${credential.allowed_ips.map(esc).join('<br>')}</td>`,
         `<td>${credential.recipients.map(esc).join('<br>')}</td>`,
         `<td>${esc(destination?.name || '所有启用设备')}</td>`,
-        `<td>${credential.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="muted">已停用</span>'}</td>`,
+        `<td>${credential.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="pill pill-ignored">已停用</span>'}</td>`,
+        `<td><div class="row-actions">
+          <button class="action-link" data-smtp-test="${credential.id}"${credential.enabled ? '' : ' disabled'}>测试</button>
+          <button class="action-link" data-edit-credential="${credential.id}">编辑</button>
+          <button class="action-link" data-rotate-credential="${credential.id}">轮换</button>
+          <button class="action-link danger" data-delete-credential="${credential.id}">删除</button>
+        </div></td>`,
       ];
     }],
     '还没有创建 API Key',
@@ -163,7 +169,11 @@ function render() {
       `<td class="muted">${esc(destination.server)}</td>`,
       `<td>${esc(destination.group || '-')}</td>`,
       `<td>${esc(destination.level || '-')}</td>`,
-      `<td>${destination.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="muted">已停用</span>'}</td>`,
+      `<td>${destination.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="pill pill-ignored">已停用</span>'}</td>`,
+      `<td><div class="row-actions">
+        <button class="action-link" data-edit-destination="${destination.id}">编辑</button>
+        <button class="action-link danger" data-delete-destination="${destination.id}">删除</button>
+      </div></td>`,
     ]],
     '还没有添加 Bark 设备',
   );
@@ -181,59 +191,87 @@ function switchView(view) {
 const formConfig = {
   credential: {
     title: '创建接入 API Key',
+    editTitle: '编辑接入 API Key',
     submit: '创建 Key',
-    endpoint: '/v1/smtp/credentials',
+    editSubmit: '保存修改',
+    resource: '/v1/smtp/credentials',
     fields: [
       { name: 'name', label: '来源名称', placeholder: 'idrac-r740', help: '用于识别设备或监控系统', required: true },
       { name: 'allowed_ips', label: '允许的来源 IP/CIDR', placeholder: '192.168.10.30/32', help: '仅这些地址可以使用此 Key，多个值用逗号分隔', required: true },
       { name: 'destination_id', label: 'Bark 设备', help: '邮件会发送到选中的设备', type: 'select' },
+      { name: 'enabled', label: '启用此 Key', help: '停用后 SMTP 鉴权会立即失败', type: 'checkbox', editOnly: true },
     ],
   },
   destination: {
     title: '添加 Bark 设备',
+    editTitle: '编辑 Bark 设备',
     submit: '添加设备',
-    endpoint: '/v1/destinations',
+    editSubmit: '保存修改',
+    resource: '/v1/destinations',
     fields: [
       { name: 'name', label: '设备名称', placeholder: '办公室 iPhone', help: '用于识别这台 iPhone', required: true },
       { name: 'server', label: 'Bark 服务器', placeholder: 'https://api.day.app', help: '自建服务请填写自己的地址', required: true },
-      { name: 'device_key', label: 'Device Key', placeholder: 'Bark App 中复制', help: '只保存在服务端，不会写入日志', required: true, secret: true },
+      { name: 'device_key', label: 'Device Key', placeholder: 'Bark App 中复制', help: '编辑时留空表示保持当前 Key', required: true, optionalOnEdit: true, secret: true },
       { name: 'group', label: '通知分组', placeholder: 'infrastructure', help: '可选，用于在通知中心归类' },
       { name: 'sound', label: '通知声音', placeholder: 'alarm', help: '可选，使用 Bark 支持的声音' },
       { name: 'level', label: '通知级别', placeholder: 'active', help: '可选，例如 active、timeSensitive、critical' },
+      { name: 'enabled', label: '启用此设备', help: '停用后不会向该设备发送通知', type: 'checkbox', editOnly: true },
+    ],
+  },
+  'smtp-test': {
+    title: '发送 SMTP 测试',
+    submit: '发送测试',
+    resource: '/v1/smtp/credentials',
+    fields: [
+      { name: 'password', label: 'SMTP API Key', placeholder: '输入创建或轮换时保存的 Key', help: '仅用于本次校验，不会保存', required: true, secret: true },
+      { name: 'subject', label: '邮件主题', value: 'mail2bark SMTP 测试', required: true },
+      { name: 'body', label: '邮件正文', value: '这是一封由 mail2bark 管理界面生成的 SMTP 测试邮件。', type: 'textarea', required: true },
     ],
   },
 };
 
-function fieldHtml(field) {
+function fieldHtml(field, value, editing) {
   const id = `field-${field.name}`;
   const common = `id="${id}" name="${field.name}"`;
-  const required = field.required ? ' required' : '';
+  const required = field.required && !(editing && field.optionalOnEdit) ? ' required' : '';
 
   if (field.type === 'select') {
-    const options = field.name === 'destination_id'
-      ? state.data.destinations.length
-        ? '<option value="0">所有启用设备（默认）</option>' + state.data.destinations
-          .map((destination) => `<option value="${destination.id}">${esc(destination.name)} · ${esc(destination.server)}</option>`)
-          .join('')
-        : '<option value="">请先添加 Bark 设备</option>'
-      : '';
-    return `<div class="field"><label for="${id}">${esc(field.label)}</label><select ${common} required>${options}</select><small>${esc(field.help)}</small></div>`;
+    const options = '<option value="0">所有启用设备（默认）</option>' + state.data.destinations
+      .map((destination) => `<option value="${destination.id}"${Number(value) === destination.id ? ' selected' : ''}>${esc(destination.name)}${destination.enabled ? '' : '（已停用）'} · ${esc(destination.server)}</option>`)
+      .join('');
+    return `<div class="field"><label for="${id}">${esc(field.label)}</label><select ${common}>${options}</select><small>${esc(field.help)}</small></div>`;
   }
 
-  const secret = field.secret ? ' autocomplete="off"' : '';
-  return `<div class="field"><label for="${id}">${esc(field.label)}</label><input ${common} placeholder="${esc(field.placeholder || '')}"${required}${secret}><small>${esc(field.help || '')}</small></div>`;
+  if (field.type === 'checkbox') {
+    return `<label class="check-field" for="${id}"><input type="checkbox" ${common}${value ? ' checked' : ''}><span><strong>${esc(field.label)}</strong><small>${esc(field.help)}</small></span></label>`;
+  }
+
+  if (field.type === 'textarea') {
+    return `<div class="field"><label for="${id}">${esc(field.label)}</label><textarea ${common}${required}>${esc(value ?? field.value ?? '')}</textarea><small>${esc(field.help || '')}</small></div>`;
+  }
+
+  const secret = field.secret ? ' type="password" autocomplete="off"' : '';
+  return `<div class="field"><label for="${id}">${esc(field.label)}</label><input ${common}${secret} value="${esc(value ?? field.value ?? '')}" placeholder="${esc(field.placeholder || '')}"${required}><small>${esc(field.help || '')}</small></div>`;
 }
 
-function openModal(kind) {
+function openModal(kind, record = null) {
   const config = formConfig[kind];
   if (!config) return;
 
   const form = $('#modal-form');
   form.dataset.kind = kind;
+  form.dataset.id = record?.id || '';
   form.reset();
-  $('#modal-title').textContent = config.title;
-  $('#modal-submit').textContent = config.submit;
-  $('#modal-fields').innerHTML = `<div class="modal-body">${config.fields.map(fieldHtml).join('')}</div>`;
+  const editing = Boolean(record && kind !== 'smtp-test');
+  $('#modal-title').textContent = editing ? config.editTitle : config.title;
+  $('#modal-submit').textContent = editing ? config.editSubmit : config.submit;
+  const fields = config.fields.filter((field) => editing || !field.editOnly);
+  $('#modal-fields').innerHTML = `<div class="modal-body">${fields.map((field) => {
+    let value = record?.[field.name] ?? field.value ?? '';
+    if (field.name === 'allowed_ips' && Array.isArray(value)) value = value.join(', ');
+    if (kind === 'smtp-test') value = field.value ?? '';
+    return fieldHtml(field, value, editing);
+  }).join('')}</div>`;
   $('#modal').showModal();
 }
 
@@ -253,19 +291,36 @@ async function submitModal(event) {
 
   const data = Object.fromEntries(new FormData(form));
   if (data.allowed_ips) data.allowed_ips = parseList(data.allowed_ips);
-  if (data.destination_id) data.destination_id = Number(data.destination_id);
+  if ('destination_id' in data) data.destination_id = Number(data.destination_id);
+  if (form.elements.enabled) data.enabled = form.elements.enabled.checked;
+
+  const id = Number(form.dataset.id);
+  const editing = Boolean(id && form.dataset.kind !== 'smtp-test');
+  let endpoint = config.resource;
+  let method = 'POST';
+  if (form.dataset.kind === 'smtp-test') {
+    endpoint = `${config.resource}/${id}/test`;
+  } else if (editing) {
+    endpoint = `${config.resource}/${id}`;
+    method = 'PUT';
+  }
 
   try {
-    const result = await api(config.endpoint, {
-      method: 'POST',
+    const result = await api(endpoint, {
+      method,
       body: JSON.stringify(data),
     });
 
     closeModal();
-    if (form.dataset.kind === 'credential') {
+    if (form.dataset.kind === 'credential' && !editing) {
       showCredentialResult(result);
+    } else if (form.dataset.kind === 'smtp-test') {
+      toast('测试邮件已进入投递队列');
+      await load();
+      switchView('messages');
+      return;
     } else {
-      toast('Bark 设备已添加');
+      toast(editing ? '修改已保存' : 'Bark 设备已添加');
     }
     await load();
   } catch (error) {
@@ -332,6 +387,65 @@ document.body.addEventListener('click', async (event) => {
 
   const modalButton = event.target.closest('[data-modal]');
   if (modalButton) openModal(modalButton.dataset.modal);
+
+  const editCredentialButton = event.target.closest('[data-edit-credential]');
+  if (editCredentialButton) {
+    const credential = state.data.credentials.find((item) => item.id === Number(editCredentialButton.dataset.editCredential));
+    if (credential) openModal('credential', credential);
+  }
+
+  const smtpTestButton = event.target.closest('[data-smtp-test]');
+  if (smtpTestButton) {
+    const credential = state.data.credentials.find((item) => item.id === Number(smtpTestButton.dataset.smtpTest));
+    if (credential) openModal('smtp-test', credential);
+  }
+
+  const rotateCredentialButton = event.target.closest('[data-rotate-credential]');
+  if (rotateCredentialButton) {
+    const id = Number(rotateCredentialButton.dataset.rotateCredential);
+    if (window.confirm('轮换后旧 Key 会立即失效，确定继续吗？')) {
+      try {
+        const result = await api(`/v1/smtp/credentials/${id}/rotate`, { method: 'POST' });
+        showCredentialResult(result);
+      } catch (error) {
+        toast(error.message);
+      }
+    }
+  }
+
+  const deleteCredentialButton = event.target.closest('[data-delete-credential]');
+  if (deleteCredentialButton) {
+    const id = Number(deleteCredentialButton.dataset.deleteCredential);
+    if (window.confirm('删除后该 Key 和收件地址会立即失效，历史邮件会保留。确定删除吗？')) {
+      try {
+        await api(`/v1/smtp/credentials/${id}`, { method: 'DELETE' });
+        toast('接入 Key 已删除');
+        await load();
+      } catch (error) {
+        toast(error.message);
+      }
+    }
+  }
+
+  const editDestinationButton = event.target.closest('[data-edit-destination]');
+  if (editDestinationButton) {
+    const destination = state.data.destinations.find((item) => item.id === Number(editDestinationButton.dataset.editDestination));
+    if (destination) openModal('destination', destination);
+  }
+
+  const deleteDestinationButton = event.target.closest('[data-delete-destination]');
+  if (deleteDestinationButton) {
+    const id = Number(deleteDestinationButton.dataset.deleteDestination);
+    if (window.confirm('确定删除这个 Bark 设备吗？')) {
+      try {
+        await api(`/v1/destinations/${id}`, { method: 'DELETE' });
+        toast('Bark 设备已删除');
+        await load();
+      } catch (error) {
+        toast(error.message);
+      }
+    }
+  }
 
   const retryButton = event.target.closest('[data-retry]');
   if (retryButton) {

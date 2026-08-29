@@ -130,6 +130,12 @@ example.com {
 - `GET /v1/messages`：查看最近邮件及投递状态
 - `POST /v1/messages/{id}/retry`：重新投递死信
 - `GET/POST /v1/smtp/credentials`：查看或创建接入 API Key
+- `PUT/DELETE /v1/smtp/credentials/{id}`：修改或删除接入 API Key
+- `POST /v1/smtp/credentials/{id}/rotate`：轮换 SMTP API Key，返回值只显示一次
+- `POST /v1/smtp/credentials/{id}/test`：校验 SMTP API Key 并将测试邮件加入 Bark 投递队列
 - `GET/POST /v1/destinations`：查看或创建 Bark 设备
+- `PUT/DELETE /v1/destinations/{id}`：修改或删除 Bark 设备
+
+管理界面的 SMTP 测试会验证 Key、邮件解析、持久化和 Bark 投递，不会检查外部设备到 SMTP 监听端口之间的网络、防火墙或 TLS 配置。仍被接入 Key 引用的 Bark 设备不能删除；仍有待处理邮件的 Key 也会受到删除保护。
 
 SQLite 使用 WAL 和 FULL synchronous。数据库文件位于 `/data/mail2bark.db`，建议将 `/data` 持久化到 Docker volume 或主机备份目录。

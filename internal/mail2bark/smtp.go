@@ -81,7 +81,7 @@ func (s *SMTPSession) Data(r io.Reader) error {
 		return fmt.Errorf("message too large")
 	}
 	subject, sender := extractHeaders(raw)
-	if err := s.backend.Store.AddMessage(context.Background(), s.from, s.rcpt, s.credential.ID, raw, subject, sender); err != nil {
+	if _, err := s.backend.Store.AddMessage(context.Background(), s.from, s.rcpt, s.credential.ID, raw, subject, sender); err != nil {
 		s.backend.Log.Error("queue message", "error", err)
 		return fmt.Errorf("temporary queue failure")
 	}

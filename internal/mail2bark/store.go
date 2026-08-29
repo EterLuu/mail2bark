@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -17,6 +18,12 @@ import (
 type Store struct{ db *sql.DB }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+var (
+	errNotFound          = errors.New("not found")
+	errCredentialPending = errors.New("credential has pending messages")
+	errDestinationInUse  = errors.New("destination is referenced by credentials")
+)
 
 func (s *Store) Migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -42,7 +49,9 @@ CREATE INDEX IF NOT EXISTS messages_due ON messages(status, next_attempt_at);
 CREATE TABLE smtp_credentials (id INTEGER PRIMARY KEY,name TEXT NOT NULL,username TEXT NOT NULL,password_hash TEXT NOT NULL,allowed_ips TEXT NOT NULL,recipients TEXT NOT NULL,destination_id INTEGER,enabled INTEGER NOT NULL DEFAULT 1,created_at DATETIME NOT NULL,last_used_at DATETIME);
 INSERT INTO smtp_credentials(id,name,username,password_hash,allowed_ips,recipients,enabled,created_at,last_used_at) SELECT id,name,username,password_hash,allowed_ips,recipients,enabled,created_at,last_used_at FROM smtp_credentials_old;
 DROP TABLE smtp_credentials_old;`)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 	}
 	_, _ = s.db.ExecContext(ctx, `ALTER TABLE smtp_credentials ADD COLUMN destination_id INTEGER`)
 	_, _ = s.db.ExecContext(ctx, `UPDATE smtp_credentials SET username='mail2bark'`)
@@ -53,14 +62,14 @@ DROP TABLE smtp_credentials_old;`)
 }
 
 type Credential struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Username   string    `json:"username"`
-	AllowedIPs []string  `json:"allowed_ips"`
-	Recipients []string  `json:"recipients"`
-	DestinationID int64   `json:"destination_id,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID            int64     `json:"id"`
+	Name          string    `json:"name"`
+	Username      string    `json:"username"`
+	AllowedIPs    []string  `json:"allowed_ips"`
+	Recipients    []string  `json:"recipients"`
+	DestinationID int64     `json:"destination_id,omitempty"`
+	Enabled       bool      `json:"enabled"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 type credentialRow struct {
 	Credential
@@ -98,11 +107,22 @@ func containsFold(xs []string, v string) bool {
 }
 
 func recipientSlug(name string) string {
-	var b strings.Builder; dash := false
+	var b strings.Builder
+	dash := false
 	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) { b.WriteRune(r); dash = false } else if b.Len() > 0 && !dash { b.WriteByte('-'); dash = true }
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			dash = false
+		} else if b.Len() > 0 && !dash {
+			b.WriteByte('-')
+			dash = true
+		}
 	}
-	slug := strings.Trim(b.String(), "-"); if slug == "" { slug = "alert" }; return slug
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "alert"
+	}
+	return slug
 }
 
 func (s *Store) CreateCredential(ctx context.Context, name, domain string, ips []string, destinationID int64) (Credential, string, error) {
@@ -113,7 +133,9 @@ func (s *Store) CreateCredential(ctx context.Context, name, domain string, ips [
 	}
 	now := time.Now().UTC()
 	addressDomain := strings.Trim(strings.ToLower(domain), " .")
-	if addressDomain == "" { addressDomain = "notify.internal" }
+	if addressDomain == "" {
+		addressDomain = "notify.internal"
+	}
 	recipient := fmt.Sprintf("%s-%s@%s", recipientSlug(name), hex.EncodeToString(mustRandomBytes(2)), addressDomain)
 	res, err := s.db.ExecContext(ctx, `INSERT INTO smtp_credentials(name,username,password_hash,allowed_ips,recipients,destination_id,created_at) VALUES(?,?,?,?,?,?,?)`, name, user, hashSecret(pass), encodeList(ips), recipient, destinationID, now)
 	if err != nil {
@@ -124,25 +146,46 @@ func (s *Store) CreateCredential(ctx context.Context, name, domain string, ips [
 	return Credential{ID: id, Name: name, Username: user, AllowedIPs: ips, Recipients: []string{recipient}, DestinationID: destinationID, Enabled: true, CreatedAt: now}, pass, nil
 }
 
-func mustRandomBytes(n int) []byte { b := make([]byte,n); _, _ = rand.Read(b); return b }
+func mustRandomBytes(n int) []byte { b := make([]byte, n); _, _ = rand.Read(b); return b }
 
 func (s *Store) FindCredential(ctx context.Context, username, password string, ip net.IP) (credentialRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,name,username,password_hash,allowed_ips,recipients,COALESCE(destination_id,0),enabled,created_at FROM smtp_credentials WHERE username=?`, username)
-	if err != nil { return credentialRow{}, err }
+	if err != nil {
+		return credentialRow{}, err
+	}
 	defer rows.Close()
 	for rows.Next() {
-		var c credentialRow; var ips, rcpts string; var enabled int
-		if err := rows.Scan(&c.ID,&c.Name,&c.Username,&c.PasswordHash,&ips,&rcpts,&c.DestinationID,&enabled,&c.CreatedAt); err != nil { return credentialRow{}, err }
-		c.AllowedIPs=decodeList(ips); c.Recipients=decodeList(rcpts); c.Enabled=enabled != 0
-		allowed:=false; for _, cidr:=range c.AllowedIPs { _, n, e:=net.ParseCIDR(strings.TrimSpace(cidr)); if e==nil && n.Contains(ip){allowed=true;break} }
-		if c.Enabled && allowed && checkSecret(c.PasswordHash,password) { _,_ = s.db.ExecContext(ctx,`UPDATE smtp_credentials SET last_used_at=? WHERE id=?`,time.Now().UTC(),c.ID); return c,nil }
+		var c credentialRow
+		var ips, rcpts string
+		var enabled int
+		if err := rows.Scan(&c.ID, &c.Name, &c.Username, &c.PasswordHash, &ips, &rcpts, &c.DestinationID, &enabled, &c.CreatedAt); err != nil {
+			return credentialRow{}, err
+		}
+		c.AllowedIPs = decodeList(ips)
+		c.Recipients = decodeList(rcpts)
+		c.Enabled = enabled != 0
+		allowed := false
+		for _, cidr := range c.AllowedIPs {
+			_, n, e := net.ParseCIDR(strings.TrimSpace(cidr))
+			if e == nil && n.Contains(ip) {
+				allowed = true
+				break
+			}
+		}
+		if c.Enabled && allowed && checkSecret(c.PasswordHash, password) {
+			_, _ = s.db.ExecContext(ctx, `UPDATE smtp_credentials SET last_used_at=? WHERE id=?`, time.Now().UTC(), c.ID)
+			return c, nil
+		}
 	}
 	return credentialRow{}, errUnauthorized
 }
 
-func (s *Store) AddMessage(ctx context.Context, from string, rcpt string, credID int64, raw []byte, subject, sender string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO messages(mail_from,rcpt_to,credential_id,raw,subject,sender,status,next_attempt_at,created_at) VALUES(?,?,?,?,?,?,?, ?,?)`, from, rcpt, credID, raw, subject, sender, "pending", time.Now().UTC(), time.Now().UTC())
-	return err
+func (s *Store) AddMessage(ctx context.Context, from string, rcpt string, credID int64, raw []byte, subject, sender string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO messages(mail_from,rcpt_to,credential_id,raw,subject,sender,status,next_attempt_at,created_at) VALUES(?,?,?,?,?,?,?, ?,?)`, from, rcpt, credID, raw, subject, sender, "pending", time.Now().UTC(), time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 type Message struct {
@@ -215,6 +258,103 @@ func (s *Store) ListCredentials(ctx context.Context) ([]Credential, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) getCredentialRow(ctx context.Context, id int64) (credentialRow, error) {
+	var c credentialRow
+	var ips, recipients string
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,username,password_hash,allowed_ips,recipients,COALESCE(destination_id,0),enabled,created_at FROM smtp_credentials WHERE id=?`, id).Scan(
+		&c.ID, &c.Name, &c.Username, &c.PasswordHash, &ips, &recipients, &c.DestinationID, &enabled, &c.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return credentialRow{}, errNotFound
+	}
+	if err != nil {
+		return credentialRow{}, err
+	}
+	c.AllowedIPs = decodeList(ips)
+	c.Recipients = decodeList(recipients)
+	c.Enabled = enabled != 0
+	return c, nil
+}
+
+func (s *Store) UpdateCredential(ctx context.Context, id int64, name string, ips []string, destinationID int64, enabled bool) (Credential, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE smtp_credentials SET name=?,allowed_ips=?,destination_id=?,enabled=? WHERE id=?`, name, encodeList(ips), destinationID, boolInt(enabled), id)
+	if err != nil {
+		return Credential{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return Credential{}, errNotFound
+	}
+	c, err := s.getCredentialRow(ctx, id)
+	return c.Credential, err
+}
+
+func (s *Store) RotateCredentialSecret(ctx context.Context, id int64) (Credential, string, error) {
+	secret, err := randomToken("")
+	if err != nil {
+		return Credential{}, "", err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE smtp_credentials SET password_hash=? WHERE id=?`, hashSecret(secret), id)
+	if err != nil {
+		return Credential{}, "", err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return Credential{}, "", errNotFound
+	}
+	c, err := s.getCredentialRow(ctx, id)
+	return c.Credential, secret, err
+}
+
+func (s *Store) AuthenticateCredentialSecret(ctx context.Context, id int64, secret string) (Credential, error) {
+	c, err := s.getCredentialRow(ctx, id)
+	if err != nil {
+		return Credential{}, err
+	}
+	if !c.Enabled || !checkSecret(c.PasswordHash, secret) {
+		return Credential{}, errUnauthorized
+	}
+	return c.Credential, nil
+}
+
+func (s *Store) DeleteCredential(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var recipients string
+	if err = tx.QueryRowContext(ctx, `SELECT recipients FROM smtp_credentials WHERE id=?`, id).Scan(&recipients); errors.Is(err, sql.ErrNoRows) {
+		return errNotFound
+	} else if err != nil {
+		return err
+	}
+
+	var pending int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE credential_id=? AND status IN ('pending','processing','retrying')`, id).Scan(&pending); err != nil {
+		return err
+	}
+	if pending > 0 {
+		return errCredentialPending
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM smtp_credentials WHERE id=?`, id); err != nil {
+		return err
+	}
+	for _, recipient := range decodeList(recipients) {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM recipients WHERE lower(address)=lower(?)`, recipient); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 func (s *Store) IsRecipient(ctx context.Context, address string) bool {
 	var enabled int

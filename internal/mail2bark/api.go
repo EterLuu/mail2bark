@@ -1,15 +1,19 @@
 package mail2bark
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type API struct {
@@ -30,7 +34,9 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("/readyz", a.ready)
 	mux.HandleFunc("/v1/smtp/credentials", a.credentials)
+	mux.HandleFunc("/v1/smtp/credentials/", a.credentialAction)
 	mux.HandleFunc("/v1/destinations", a.destinations)
+	mux.HandleFunc("/v1/destinations/", a.destinationAction)
 	mux.HandleFunc("/v1/messages", a.messages)
 	mux.HandleFunc("/v1/messages/", a.messageAction)
 
@@ -116,33 +122,17 @@ func (a *API) credentials(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonResponse(w, 200, out)
 	case http.MethodPost:
-		var in struct {
-			Name          string   `json:"name"`
-			AllowedIPs    []string `json:"allowed_ips"`
-			DestinationID int64    `json:"destination_id"`
-		}
-		if json.NewDecoder(r.Body).Decode(&in) != nil || strings.TrimSpace(in.Name) == "" {
-			jsonResponse(w, 400, map[string]string{"error": "请填写来源名称"})
+		var input credentialInput
+		if json.NewDecoder(r.Body).Decode(&input) != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请求内容无效"})
 			return
 		}
-		in.Name = strings.TrimSpace(in.Name)
-		if len(in.AllowedIPs) == 0 {
-			jsonResponse(w, 400, map[string]string{"error": "至少填写一个允许的来源 IP"})
+		input.Enabled = true
+		if err := a.validateCredentialInput(r.Context(), &input); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		ips, err := normalizeIPs(in.AllowedIPs)
-		if err != nil {
-			jsonResponse(w, 400, map[string]string{"error": err.Error()})
-			return
-		}
-		if in.DestinationID != 0 {
-			var enabled int
-			if queryErr := a.Store.db.QueryRowContext(r.Context(), `SELECT enabled FROM destinations WHERE id=?`, in.DestinationID).Scan(&enabled); queryErr != nil || enabled == 0 {
-				jsonResponse(w, 400, map[string]string{"error": "指定的 Bark 设备不存在或已停用"})
-				return
-			}
-		}
-		c, p, err := a.Store.CreateCredential(r.Context(), in.Name, a.RecipientDomain, ips, in.DestinationID)
+		c, p, err := a.Store.CreateCredential(r.Context(), input.Name, a.RecipientDomain, input.AllowedIPs, input.DestinationID)
 		if err != nil {
 			jsonResponse(w, 400, map[string]string{"error": err.Error()})
 			return
@@ -151,6 +141,159 @@ func (a *API) credentials(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(405)
 	}
+}
+
+type credentialInput struct {
+	Name          string   `json:"name"`
+	AllowedIPs    []string `json:"allowed_ips"`
+	DestinationID int64    `json:"destination_id"`
+	Enabled       bool     `json:"enabled"`
+}
+
+func (a *API) validateCredentialInput(ctx context.Context, input *credentialInput) error {
+	input.Name = strings.TrimSpace(input.Name)
+	if input.Name == "" {
+		return fmt.Errorf("请填写来源名称")
+	}
+	if len(input.AllowedIPs) == 0 {
+		return fmt.Errorf("至少填写一个允许的来源 IP")
+	}
+	ips, err := normalizeIPs(input.AllowedIPs)
+	if err != nil {
+		return err
+	}
+	input.AllowedIPs = ips
+	if input.DestinationID != 0 {
+		exists, err := a.Store.DestinationExists(ctx, input.DestinationID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("指定的 Bark 设备不存在")
+		}
+	}
+	return nil
+}
+
+func resourceAction(path, prefix string) (int64, string, bool) {
+	tail := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	parts := strings.Split(tail, "/")
+	if tail == "" || len(parts) > 2 {
+		return 0, "", false
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		return 0, "", false
+	}
+	if len(parts) == 2 {
+		return id, parts[1], true
+	}
+	return id, "", true
+}
+
+func (a *API) credentialAction(w http.ResponseWriter, r *http.Request) {
+	if !a.guard(w, r) {
+		return
+	}
+	id, action, ok := resourceAction(r.URL.Path, "/v1/smtp/credentials/")
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if action == "rotate" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		credential, secret, err := a.Store.RotateCredentialSecret(r.Context(), id)
+		if err != nil {
+			a.storeError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"credential": credential, "password": secret})
+		return
+	}
+	if action == "test" {
+		a.smtpTest(w, r, id)
+		return
+	}
+	if action != "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var input credentialInput
+		if json.NewDecoder(r.Body).Decode(&input) != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请求内容无效"})
+			return
+		}
+		if err := a.validateCredentialInput(r.Context(), &input); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		credential, err := a.Store.UpdateCredential(r.Context(), id, input.Name, input.AllowedIPs, input.DestinationID, input.Enabled)
+		if err != nil {
+			a.storeError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, credential)
+	case http.MethodDelete:
+		if err := a.Store.DeleteCredential(r.Context(), id); err != nil {
+			a.storeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) smtpTest(w http.ResponseWriter, r *http.Request, credentialID int64) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var input struct {
+		Password string `json:"password"`
+		Subject  string `json:"subject"`
+		Body     string `json:"body"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || strings.TrimSpace(input.Password) == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请填写 SMTP API Key"})
+		return
+	}
+	credential, err := a.Store.AuthenticateCredentialSecret(r.Context(), credentialID, input.Password)
+	if err != nil {
+		if errors.Is(err, errUnauthorized) {
+			jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "SMTP API Key 无效或已停用"})
+			return
+		}
+		a.storeError(w, err)
+		return
+	}
+	if len(credential.Recipients) == 0 {
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "该 Key 没有可用收件地址"})
+		return
+	}
+	subject := strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(input.Subject))
+	if subject == "" {
+		subject = "mail2bark SMTP 测试"
+	}
+	body := strings.TrimSpace(input.Body)
+	if body == "" {
+		body = "这是一封由 mail2bark 管理界面生成的 SMTP 测试邮件。"
+	}
+	recipient := credential.Recipients[0]
+	from := "mail2bark-test@localhost"
+	raw := []byte(fmt.Sprintf("From: mail2bark SMTP Test <%s>\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n",
+		from, recipient, mime.QEncoding.Encode("UTF-8", subject), time.Now().Format(time.RFC1123Z), body))
+	messageID, err := a.Store.AddMessage(r.Context(), from, recipient, credential.ID, raw, subject, "mail2bark SMTP Test")
+	if err != nil {
+		a.storeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]any{"message_id": messageID, "status": "pending"})
 }
 func (a *API) destinations(w http.ResponseWriter, r *http.Request) {
 	if !a.guard(w, r) {
@@ -163,19 +306,20 @@ func (a *API) destinations(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 500, map[string]string{"error": e.Error()})
 			return
 		}
+		for i := range o {
+			o[i].DeviceKey = ""
+		}
 		jsonResponse(w, 200, o)
 	case http.MethodPost:
 		var d Destination
-		if json.NewDecoder(r.Body).Decode(&d) != nil || strings.TrimSpace(d.Name) == "" || strings.TrimSpace(d.Server) == "" || strings.TrimSpace(d.DeviceKey) == "" {
-			jsonResponse(w, 400, map[string]string{"error": "请填写设备名称、Bark 服务器和 Device Key"})
+		if json.NewDecoder(r.Body).Decode(&d) != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请求内容无效"})
 			return
 		}
-		endpoint, parseErr := url.Parse(strings.TrimSpace(d.Server))
-		if parseErr != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" {
-			jsonResponse(w, 400, map[string]string{"error": "Bark 服务器必须是有效的 HTTP 或 HTTPS 地址"})
+		if err := validateDestinationInput(&d, true); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		d.Name, d.Server, d.DeviceKey = strings.TrimSpace(d.Name), strings.TrimSpace(d.Server), strings.TrimSpace(d.DeviceKey)
 		created, e := a.Store.CreateDestination(r.Context(), d)
 		if e != nil {
 			jsonResponse(w, 400, map[string]string{"error": e.Error()})
@@ -184,6 +328,74 @@ func (a *API) destinations(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 201, map[string]any{"id": created.ID, "name": created.Name})
 	default:
 		w.WriteHeader(405)
+	}
+}
+
+func validateDestinationInput(destination *Destination, requireDeviceKey bool) error {
+	destination.Name = strings.TrimSpace(destination.Name)
+	destination.Server = strings.TrimSpace(destination.Server)
+	destination.DeviceKey = strings.TrimSpace(destination.DeviceKey)
+	destination.Group = strings.TrimSpace(destination.Group)
+	destination.Sound = strings.TrimSpace(destination.Sound)
+	destination.Level = strings.TrimSpace(destination.Level)
+	if destination.Name == "" || destination.Server == "" || (requireDeviceKey && destination.DeviceKey == "") {
+		return fmt.Errorf("请填写设备名称、Bark 服务器和 Device Key")
+	}
+	endpoint, err := url.Parse(destination.Server)
+	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" {
+		return fmt.Errorf("Bark 服务器必须是有效的 HTTP 或 HTTPS 地址")
+	}
+	return nil
+}
+
+func (a *API) destinationAction(w http.ResponseWriter, r *http.Request) {
+	if !a.guard(w, r) {
+		return
+	}
+	id, action, ok := resourceAction(r.URL.Path, "/v1/destinations/")
+	if !ok || action != "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var destination Destination
+		if json.NewDecoder(r.Body).Decode(&destination) != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请求内容无效"})
+			return
+		}
+		if err := validateDestinationInput(&destination, false); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		updated, err := a.Store.UpdateDestination(r.Context(), id, destination)
+		if err != nil {
+			a.storeError(w, err)
+			return
+		}
+		updated.DeviceKey = ""
+		jsonResponse(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if err := a.Store.DeleteDestination(r.Context(), id); err != nil {
+			a.storeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) storeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errNotFound):
+		jsonResponse(w, http.StatusNotFound, map[string]string{"error": "资源不存在"})
+	case errors.Is(err, errCredentialPending):
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "该 Key 仍有待处理邮件，暂时不能删除"})
+	case errors.Is(err, errDestinationInUse):
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "该 Bark 设备仍被接入 Key 使用，请先修改绑定"})
+	default:
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 }
 func (a *API) messages(w http.ResponseWriter, r *http.Request) {

@@ -14,7 +14,7 @@
       <nav id="nav" class="nav-list">
         <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span>概览</button>
         <button class="nav-item" data-view="messages"><span class="nav-icon">▤</span>邮件记录</button>
-        <button class="nav-item" data-view="credentials"><span class="nav-icon">◇</span>接入 API Key</button>
+        <button class="nav-item" data-view="credentials"><span class="nav-icon">◇</span>接入列表</button>
         <button class="nav-item" data-view="destinations"><span class="nav-icon">◉</span>Bark 设备</button>
       </nav>
       <div class="sidebar-foot"><span class="status-dot"></span><span>服务正常</span><span class="version">v0.1</span></div>
@@ -28,8 +28,8 @@
         <div class="table-wrap"><table><thead><tr><th>主题</th><th>收件人</th><th>状态</th><th>投递尝试</th><th>接收时间</th></tr></thead><tbody id="overview-messages"></tbody></table></div>
       </section>
       <section id="view-messages" class="view"><div class="section-heading"><div><h2>邮件记录</h2><p>原始邮件会持久保存，投递失败后可以再次尝试</p></div></div><div class="table-wrap"><table><thead><tr><th>主题</th><th>发件人</th><th>收件人</th><th>状态</th><th>投递尝试</th><th>接收时间</th><th></th></tr></thead><tbody id="messages-list"></tbody></table></div></section>
-      <section id="view-credentials" class="view"><div class="section-heading"><div><h2>接入 API Key</h2><p>每个 Key 代表一个发送来源，并绑定来源 IP 和 Bark 设备</p></div><button class="primary-btn" data-modal="credential">+ 创建 API Key</button></div><div class="notice">SMTP 用户名固定为 <strong>mail2bark</strong>。创建后会自动生成收件地址和一次性 Key，请将两者一起配置到告警设备。</div><div class="table-wrap"><table><thead><tr><th>名称</th><th>SMTP 用户</th><th>允许 IP</th><th>自动收件地址</th><th>Bark 设备</th><th>状态</th></tr></thead><tbody id="credentials-list"></tbody></table></div></section>
-      <section id="view-destinations" class="view"><div class="section-heading"><div><h2>Bark 设备</h2><p>邮件解析完成后，会发送到 Key 绑定的设备</p></div><button class="primary-btn" data-modal="destination">+ 添加 Bark 设备</button></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>服务器</th><th>分组</th><th>通知级别</th><th>状态</th></tr></thead><tbody id="destinations-list"></tbody></table></div></section>
+      <section id="view-credentials" class="view"><div class="section-heading"><div><h2>接入列表</h2><p>每个 Key 代表一个发送来源，并绑定来源 IP 和 Bark 设备</p></div><button class="primary-btn" data-modal="credential">+ 创建 API Key</button></div><div class="notice">SMTP 用户名固定为 <strong>mail2bark</strong>。创建后会自动生成收件地址和一次性 Key，请将两者一起配置到告警设备。</div><div class="table-wrap"><table><thead><tr><th>名称</th><th>SMTP 用户</th><th>允许 IP</th><th>自动收件地址</th><th>Bark 设备</th><th>状态</th><th>操作</th></tr></thead><tbody id="credentials-list"></tbody></table></div></section>
+      <section id="view-destinations" class="view"><div class="section-heading"><div><h2>Bark 设备</h2><p>邮件解析完成后，会发送到 Key 绑定的设备</p></div><button class="primary-btn" data-modal="destination">+ 添加 Bark 设备</button></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>服务器</th><th>分组</th><th>通知级别</th><th>状态</th><th>操作</th></tr></thead><tbody id="destinations-list"></tbody></table></div></section>
     </main>
   </div>
   <dialog id="modal"><form id="modal-form"><div class="modal-head"><div><p class="eyebrow">配置</p><h2 id="modal-title">新增</h2></div><button type="button" class="icon-btn" data-cancel aria-label="关闭">×</button></div><div id="modal-fields"></div><div class="modal-actions"><button type="button" class="secondary-btn" data-cancel>取消</button><button type="submit" class="primary-btn" id="modal-submit">保存</button></div></form></dialog>
