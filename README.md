@@ -128,14 +128,18 @@ example.com {
 ## 数据与接口
 
 - `GET /v1/messages`：查看最近邮件及投递状态
+- `GET /v1/messages/{id}`：查看邮件详情、解析结果和原始邮件
 - `POST /v1/messages/{id}/retry`：重新投递死信
 - `GET/POST /v1/smtp/credentials`：查看或创建接入 API Key
+- `GET /v1/smtp/credentials/{id}`：查看接入配置和当前 API Key
 - `PUT/DELETE /v1/smtp/credentials/{id}`：修改或删除接入 API Key
-- `POST /v1/smtp/credentials/{id}/rotate`：轮换 SMTP API Key，返回值只显示一次
+- `POST /v1/smtp/credentials/{id}/rotate`：轮换 SMTP API Key，自动收件地址保持不变
 - `POST /v1/smtp/credentials/{id}/test`：校验 SMTP API Key 并将测试邮件加入 Bark 投递队列
 - `GET/POST /v1/destinations`：查看或创建 Bark 设备
 - `PUT/DELETE /v1/destinations/{id}`：修改或删除 Bark 设备
 
 管理界面的 SMTP 测试会验证 Key、邮件解析、持久化和 Bark 投递，不会检查外部设备到 SMTP 监听端口之间的网络、防火墙或 TLS 配置。仍被接入 Key 引用的 Bark 设备不能删除；仍有待处理邮件的 Key 也会受到删除保护。
+
+新创建或轮换的 API Key 可以通过详情 API 再次查看；旧版本数据库中的 Key 哈希无法反推出原值，升级后需要先轮换一次。轮换不会改变自动生成的 SMTP 收件地址。
 
 SQLite 使用 WAL 和 FULL synchronous。数据库文件位于 `/data/mail2bark.db`，建议将 `/data` 持久化到 Docker volume 或主机备份目录。

@@ -2,16 +2,34 @@ package mail2bark
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"html"
+	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"regexp"
 	"strings"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
+	"golang.org/x/text/transform"
 )
 
-type Alert struct{ Title, Body, Severity, Device, Component, Event, Detail, Timestamp string }
+type Alert struct {
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Severity  string `json:"severity"`
+	Device    string `json:"device"`
+	Component string `json:"component"`
+	Event     string `json:"event"`
+	Detail    string `json:"detail"`
+	Timestamp string `json:"timestamp"`
+}
 
 var tagRE = regexp.MustCompile(`(?s)<[^>]*>`)
 var spaceRE = regexp.MustCompile(`[ \t]+`)
@@ -21,7 +39,7 @@ func ParseAlert(raw []byte, fallbackSubject, fallbackSender string) Alert {
 	if err != nil {
 		return basicAlert(fallbackSubject, fallbackSender, string(raw))
 	}
-	subject := msg.Header.Get("Subject")
+	subject := decodeHeaderValue(msg.Header.Get("Subject"))
 	if subject == "" {
 		subject = fallbackSubject
 	}
@@ -61,13 +79,12 @@ func readBody(m *mail.Message) string {
 			if e != nil {
 				break
 			}
-			b := new(bytes.Buffer)
-			b.ReadFrom(p)
-			pm := p.Header.Get("Content-Type")
-			if strings.HasPrefix(pm, "text/plain") {
-				plain = b.String()
-			} else if strings.HasPrefix(pm, "text/html") {
-				htmlBody = b.String()
+			body, _ := decodePartBody(p, p.Header.Get("Content-Type"), p.Header.Get("Content-Transfer-Encoding"))
+			pm, _, _ := mime.ParseMediaType(p.Header.Get("Content-Type"))
+			if pm == "text/plain" {
+				plain = body
+			} else if pm == "text/html" {
+				htmlBody = body
 			}
 		}
 		if plain != "" {
@@ -75,12 +92,65 @@ func readBody(m *mail.Message) string {
 		}
 		return cleanText(htmlBody)
 	}
-	b := new(bytes.Buffer)
-	b.ReadFrom(m.Body)
+	body, _ := decodePartBody(m.Body, ct, m.Header.Get("Content-Transfer-Encoding"))
 	if med == "text/html" {
-		return cleanText(b.String())
+		return cleanText(body)
 	}
-	return cleanText(b.String())
+	return cleanText(body)
+}
+
+func decodeHeaderValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	decoded, err := (&mime.WordDecoder{CharsetReader: charsetReader}).DecodeHeader(value)
+	if err != nil {
+		return value
+	}
+	return decoded
+}
+
+func charsetReader(charset string, input io.Reader) (io.Reader, error) {
+	name := strings.ToLower(strings.TrimSpace(charset))
+	var decoder *encoding.Decoder
+	switch name {
+	case "utf-8", "utf8", "us-ascii", "ascii":
+		return input, nil
+	case "gbk", "x-gbk", "cp936", "ms936":
+		decoder = simplifiedchinese.GBK.NewDecoder()
+	case "gb18030":
+		decoder = simplifiedchinese.GB18030.NewDecoder()
+	case "big5", "big-5", "cp950":
+		decoder = traditionalchinese.Big5.NewDecoder()
+	case "iso-8859-1", "latin1", "latin-1":
+		decoder = charmap.ISO8859_1.NewDecoder()
+	case "windows-1252", "cp1252":
+		decoder = charmap.Windows1252.NewDecoder()
+	default:
+		return input, nil
+	}
+	return transform.NewReader(input, decoder), nil
+}
+
+func decodePartBody(body io.Reader, contentType, transferEncoding string) (string, error) {
+	var decoded io.Reader = body
+	switch strings.ToLower(strings.TrimSpace(transferEncoding)) {
+	case "base64":
+		decoded = base64.NewDecoder(base64.StdEncoding, body)
+	case "quoted-printable":
+		decoded = quotedprintable.NewReader(body)
+	}
+	raw, err := io.ReadAll(decoded)
+	if err != nil {
+		return "", err
+	}
+	_, params, _ := mime.ParseMediaType(contentType)
+	reader, err := charsetReader(params["charset"], bytes.NewReader(raw))
+	if err != nil {
+		return string(raw), err
+	}
+	converted, err := io.ReadAll(reader)
+	return string(converted), err
 }
 func cleanText(v string) string {
 	v = html.UnescapeString(tagRE.ReplaceAllString(v, " "))

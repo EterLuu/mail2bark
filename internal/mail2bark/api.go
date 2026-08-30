@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strconv"
 	"strings"
@@ -155,8 +156,15 @@ func (a *API) validateCredentialInput(ctx context.Context, input *credentialInpu
 	if input.Name == "" {
 		return fmt.Errorf("请填写来源名称")
 	}
+	filteredIPs := input.AllowedIPs[:0]
+	for _, value := range input.AllowedIPs {
+		if strings.TrimSpace(value) != "" {
+			filteredIPs = append(filteredIPs, value)
+		}
+	}
+	input.AllowedIPs = filteredIPs
 	if len(input.AllowedIPs) == 0 {
-		return fmt.Errorf("至少填写一个允许的来源 IP")
+		input.AllowedIPs = []string{"0.0.0.0/0"}
 	}
 	ips, err := normalizeIPs(input.AllowedIPs)
 	if err != nil {
@@ -222,6 +230,13 @@ func (a *API) credentialAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		credential, err := a.Store.GetCredential(r.Context(), id)
+		if err != nil {
+			a.storeError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, credential)
 	case http.MethodPut:
 		var input credentialInput
 		if json.NewDecoder(r.Body).Decode(&input) != nil {
@@ -258,6 +273,7 @@ func (a *API) smtpTest(w http.ResponseWriter, r *http.Request, credentialID int6
 		Password string `json:"password"`
 		Subject  string `json:"subject"`
 		Body     string `json:"body"`
+		From     string `json:"from"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || strings.TrimSpace(input.Password) == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请填写 SMTP API Key"})
@@ -285,7 +301,20 @@ func (a *API) smtpTest(w http.ResponseWriter, r *http.Request, credentialID int6
 		body = "这是一封由 mail2bark 管理界面生成的 SMTP 测试邮件。"
 	}
 	recipient := credential.Recipients[0]
-	from := "mail2bark-test@localhost"
+	from := strings.TrimSpace(input.From)
+	if from == "" {
+		from = "mail2bark-test@localhost"
+	} else {
+		if strings.ContainsAny(from, "\r\n") {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "发件地址格式无效"})
+			return
+		}
+		parsed, err := mail.ParseAddress(from)
+		if err != nil || parsed.Address != from {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "发件地址格式无效"})
+			return
+		}
+	}
 	raw := []byte(fmt.Sprintf("From: mail2bark SMTP Test <%s>\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n",
 		from, recipient, mime.QEncoding.Encode("UTF-8", subject), time.Now().Format(time.RFC1123Z), body))
 	messageID, err := a.Store.AddMessage(r.Context(), from, recipient, credential.ID, raw, subject, "mail2bark SMTP Test")
@@ -418,6 +447,20 @@ func (a *API) messageAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 3 && parts[0] == "v1" && parts[1] == "messages" && r.Method == http.MethodGet {
+		id, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		detail, err := a.Store.GetMessageDetail(r.Context(), id)
+		if err != nil {
+			a.storeError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, detail)
+		return
+	}
 	if len(parts) != 4 || parts[0] != "v1" || parts[1] != "messages" || parts[3] != "retry" {
 		w.WriteHeader(404)
 		return

@@ -94,8 +94,8 @@ func extractHeaders(raw []byte) (subject, sender string) {
 	if err != nil {
 		return "", ""
 	}
-	subject = m.Header.Get("Subject")
-	sender = m.Header.Get("From")
+	subject = decodeHeaderValue(m.Header.Get("Subject"))
+	sender = decodeHeaderValue(m.Header.Get("From"))
 	return
 }
 

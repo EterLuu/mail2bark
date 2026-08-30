@@ -74,6 +74,10 @@ function statusBadge(status) {
   return `<span class="pill pill-${esc(status)}">${esc(statusText[status] || status)}</span>`;
 }
 
+function copyButton(value, label = '复制') {
+  return `<button class="copy-btn" type="button" data-copy="${esc(value)}" title="复制">${label}</button>`;
+}
+
 function tableRows(element, rows, columns, emptyText = '暂无数据') {
   element.innerHTML = rows.length
     ? rows.map((row) => `<tr>${columns.flatMap((column) => column(row)).join('')}</tr>`).join('')
@@ -113,8 +117,8 @@ function render() {
     messages.slice(0, 6),
     [
       (message) => `<td class="subject">${esc(message.subject || '（无主题）')}</td>`,
-      (message) => `<td>${esc(message.to)}</td>`,
-      (message) => statusBadge(message.status),
+      (message) => `<td>${esc(message.to)} ${copyButton(message.to)}</td>`,
+      (message) => `<td>${statusBadge(message.status)}</td>`,
       (message) => `<td>${message.attempts}</td>`,
       (message) => `<td class="muted">${formatTime(message.created_at)}</td>`,
     ],
@@ -125,15 +129,15 @@ function render() {
     $('#messages-list'),
     messages,
     [(message) => [
-      `<td class="subject">${esc(message.subject || '（无主题）')}</td>`,
+      `<td class="subject"><button class="action-link subject-link" data-message-detail="${message.id}">${esc(message.subject || '（无主题）')}</button></td>`,
       `<td class="muted">${esc(message.from || '-')}</td>`,
-      `<td>${esc(message.to)}</td>`,
+      `<td>${esc(message.to)} ${copyButton(message.to)}</td>`,
       `<td>${statusBadge(message.status)}</td>`,
       `<td>${message.attempts}</td>`,
       `<td class="muted">${formatTime(message.created_at)}</td>`,
-      `<td>${['dead_letter', 'ignored'].includes(message.status)
+      `<td><div class="row-actions"><button class="action-link" data-message-detail="${message.id}">详情</button>${['dead_letter', 'ignored'].includes(message.status)
         ? `<button class="action-link" data-retry="${message.id}">重新投递</button>`
-        : ''}</td>`,
+        : ''}</div></td>`,
     ]],
     '还没有收到邮件',
   );
@@ -145,13 +149,15 @@ function render() {
       const destination = destinations.find((item) => item.id === credential.destination_id);
       return [
         `<td class="subject">${esc(credential.name)}</td>`,
-        '<td class="mono">mail2bark</td>',
+        `<td class="mono">mail2bark ${copyButton('mail2bark')}</td>`,
         `<td>${credential.allowed_ips.map(esc).join('<br>')}</td>`,
-        `<td>${credential.recipients.map(esc).join('<br>')}</td>`,
+        `<td>${credential.recipients.map((recipient) => `${esc(recipient)} ${copyButton(recipient)}`).join('<br>')}</td>`,
         `<td>${esc(destination?.name || '所有启用设备')}</td>`,
         `<td>${credential.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="pill pill-ignored">已停用</span>'}</td>`,
-        `<td><div class="row-actions">
+      `<td><div class="row-actions">
           <button class="action-link" data-smtp-test="${credential.id}"${credential.enabled ? '' : ' disabled'}>测试</button>
+          <button class="action-link" data-view-credential="${credential.id}">查看 Key</button>
+          <button class="action-link" data-copy-credential="${credential.id}">复制 Key</button>
           <button class="action-link" data-edit-credential="${credential.id}">编辑</button>
           <button class="action-link" data-rotate-credential="${credential.id}">轮换</button>
           <button class="action-link danger" data-delete-credential="${credential.id}">删除</button>
@@ -166,7 +172,7 @@ function render() {
     destinations,
     [(destination) => [
       `<td class="subject">${esc(destination.name)}</td>`,
-      `<td class="muted">${esc(destination.server)}</td>`,
+      `<td class="muted">${esc(destination.server)} ${copyButton(destination.server)}</td>`,
       `<td>${esc(destination.group || '-')}</td>`,
       `<td>${esc(destination.level || '-')}</td>`,
       `<td>${destination.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="pill pill-ignored">已停用</span>'}</td>`,
@@ -197,7 +203,7 @@ const formConfig = {
     resource: '/v1/smtp/credentials',
     fields: [
       { name: 'name', label: '来源名称', placeholder: 'idrac-r740', help: '用于识别设备或监控系统', required: true },
-      { name: 'allowed_ips', label: '允许的来源 IP/CIDR', placeholder: '192.168.10.30/32', help: '仅这些地址可以使用此 Key，多个值用逗号分隔', required: true },
+      { name: 'allowed_ips', label: '允许的来源 IP/CIDR', placeholder: '留空则允许所有 IPv4 地址', help: '多个值用逗号分隔；留空自动使用 0.0.0.0/0', required: false },
       { name: 'destination_id', label: 'Bark 设备', help: '邮件会发送到选中的设备', type: 'select' },
       { name: 'enabled', label: '启用此 Key', help: '停用后 SMTP 鉴权会立即失败', type: 'checkbox', editOnly: true },
     ],
@@ -212,9 +218,9 @@ const formConfig = {
       { name: 'name', label: '设备名称', placeholder: '办公室 iPhone', help: '用于识别这台 iPhone', required: true },
       { name: 'server', label: 'Bark 服务器', placeholder: 'https://api.day.app', help: '自建服务请填写自己的地址', required: true },
       { name: 'device_key', label: 'Device Key', placeholder: 'Bark App 中复制', help: '编辑时留空表示保持当前 Key', required: true, optionalOnEdit: true, secret: true },
-      { name: 'group', label: '通知分组', placeholder: 'infrastructure', help: '可选，用于在通知中心归类' },
-      { name: 'sound', label: '通知声音', placeholder: 'alarm', help: '可选，使用 Bark 支持的声音' },
-      { name: 'level', label: '通知级别', placeholder: 'active', help: '可选，例如 active、timeSensitive、critical' },
+      { name: 'group', label: '通知分组', help: '可选，用于在通知中心归类', type: 'select-custom', options: [['', '不设置'], ['infrastructure', '基础设施'], ['monitoring', '监控'], ['alert', '告警'], ['security', '安全'], ['system', '系统']] },
+      { name: 'sound', label: '通知声音', help: '可选，选择常用声音或输入 Bark 支持的声音', type: 'select-custom', options: [['', '不设置'], ['alarm', 'Alarm'], ['anticipate', 'Anticipate'], ['birdsong', 'Birdsong'], ['blossom', 'Blossom'], ['calypso', 'Calypso'], ['chime', 'Chime'], ['electronic', 'Electronic'], ['fanfare', 'Fanfare'], ['glass', 'Glass'], ['gotit', 'Got It'], ['healthnotification', 'Health Notification'], ['horn', 'Horn'], ['illuminate', 'Illuminate'], ['mailsent', 'Mail Sent'], ['minuet', 'Minuet'], ['multiwayinvitation', 'Multiway Invitation'], ['newmail', 'New Mail'], ['newsflash', 'News Flash'], ['noir', 'Noir'], ['paymentsuccess', 'Payment Success'], ['shake', 'Shake'], ['sirius', 'Sirius'], ['spell', 'Spell'], ['suspense', 'Suspense'], ['telegraph', 'Telegraph'], ['tiptoes', 'Tiptoes'], ['typewriters', 'Typewriters'], ['update', 'Update']] },
+      { name: 'level', label: '通知级别', help: '可选，选择 Bark 支持的级别或自定义', type: 'select-custom', options: [['', '不设置'], ['active', 'Active'], ['timeSensitive', 'Time Sensitive'], ['passive', 'Passive'], ['critical', 'Critical']] },
       { name: 'enabled', label: '启用此设备', help: '停用后不会向该设备发送通知', type: 'checkbox', editOnly: true },
     ],
   },
@@ -224,6 +230,7 @@ const formConfig = {
     resource: '/v1/smtp/credentials',
     fields: [
       { name: 'password', label: 'SMTP API Key', placeholder: '输入创建或轮换时保存的 Key', help: '仅用于本次校验，不会保存', required: true, secret: true },
+      { name: 'from', label: '发件地址（可选）', placeholder: 'monitor@example.com', help: '留空使用 mail2bark-test@localhost' },
       { name: 'subject', label: '邮件主题', value: 'mail2bark SMTP 测试', required: true },
       { name: 'body', label: '邮件正文', value: '这是一封由 mail2bark 管理界面生成的 SMTP 测试邮件。', type: 'textarea', required: true },
     ],
@@ -240,6 +247,13 @@ function fieldHtml(field, value, editing) {
       .map((destination) => `<option value="${destination.id}"${Number(value) === destination.id ? ' selected' : ''}>${esc(destination.name)}${destination.enabled ? '' : '（已停用）'} · ${esc(destination.server)}</option>`)
       .join('');
     return `<div class="field"><label for="${id}">${esc(field.label)}</label><select ${common}>${options}</select><small>${esc(field.help)}</small></div>`;
+  }
+
+  if (field.type === 'select-custom') {
+    const customValue = value && !field.options.some(([option]) => option === value) ? value : '';
+    const selectedValue = customValue ? '__custom__' : (value ?? '');
+    const options = field.options.map(([option, label]) => `<option value="${esc(option)}"${selectedValue === option ? ' selected' : ''}>${esc(label)}</option>`).join('');
+    return `<div class="field"><label for="${id}">${esc(field.label)}</label><select ${common} data-custom-select="${id}-custom">${options}<option value="__custom__"${selectedValue === '__custom__' ? ' selected' : ''}>自定义...</option></select><input class="custom-select-input" id="${id}-custom" name="${field.name}_custom" value="${esc(customValue)}" placeholder="输入自定义值"${customValue ? '' : ' hidden'}><small>${esc(field.help || '')}</small></div>`;
   }
 
   if (field.type === 'checkbox') {
@@ -291,6 +305,10 @@ async function submitModal(event) {
 
   const data = Object.fromEntries(new FormData(form));
   if (data.allowed_ips) data.allowed_ips = parseList(data.allowed_ips);
+  config.fields.filter((field) => field.type === 'select-custom').forEach((field) => {
+    if (data[field.name] === '__custom__') data[field.name] = data[`${field.name}_custom`] || '';
+    delete data[`${field.name}_custom`];
+  });
   if ('destination_id' in data) data.destination_id = Number(data.destination_id);
   if (form.elements.enabled) data.enabled = form.elements.enabled.checked;
 
@@ -334,13 +352,13 @@ function showCredentialResult(result) {
   dialog.innerHTML = `
     <div class="modal-head">
       <div>
-        <p class="eyebrow">一次性配置信息</p>
-        <h2>请立即保存 API Key</h2>
+        <p class="eyebrow">接入配置信息</p>
+        <h2>SMTP 接入 Key</h2>
       </div>
       <button type="button" class="icon-btn" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
-      <p class="muted">关闭窗口后将无法再次查看 Key。</p>
+      <p class="muted">Key 可通过此窗口再次查看；轮换后旧 Key 会立即失效。</p>
       <dl class="credential-result">
         <div><dt>SMTP 服务器</dt><dd>${esc(location.hostname)}（端口见部署配置）</dd></div>
         <div><dt>SMTP 用户名</dt><dd><code>${esc(credential.username)}</code></dd></div>
@@ -376,6 +394,32 @@ function showCredentialResult(result) {
   dialog.showModal();
 }
 
+function showMessageDetail(detail) {
+  const alert = detail.alert || {};
+  const dialog = document.createElement('dialog');
+  dialog.className = 'wide-dialog';
+  dialog.innerHTML = `
+    <div class="modal-head"><div><p class="eyebrow">邮件详情</p><h2>${esc(detail.subject || '（无主题）')}</h2></div><button type="button" class="icon-btn" aria-label="关闭">×</button></div>
+    <div class="modal-body detail-body">
+      <dl class="message-detail">
+        <div><dt>发件地址</dt><dd>${esc(detail.from || '-')} ${copyButton(detail.from || '')}</dd></div>
+        <div><dt>收件地址</dt><dd>${esc(detail.to || '-')} ${copyButton(detail.to || '')}</dd></div>
+        <div><dt>解析级别</dt><dd>${esc(alert.severity || '-')}</dd></div>
+        <div><dt>设备</dt><dd>${esc(alert.device || '-')}</dd></div>
+        <div><dt>组件</dt><dd>${esc(alert.component || '-')}</dd></div>
+        <div><dt>事件</dt><dd>${esc(alert.event || '-')}</dd></div>
+        <div><dt>通知正文</dt><dd><pre>${esc(alert.body || '')}</pre></dd></div>
+        <div><dt>原始邮件</dt><dd><pre>${esc(detail.raw || '')}</pre></dd></div>
+      </dl>
+    </div>
+    <div class="modal-actions"><button type="button" class="secondary-btn close-detail">关闭</button></div>`;
+  dialog.querySelector('.icon-btn').onclick = () => dialog.close();
+  dialog.querySelector('.close-detail').onclick = () => dialog.close();
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.appendChild(dialog);
+  dialog.showModal();
+}
+
 $('#nav').addEventListener('click', (event) => {
   const button = event.target.closest('[data-view]');
   if (button) switchView(button.dataset.view);
@@ -392,6 +436,48 @@ document.body.addEventListener('click', async (event) => {
   if (editCredentialButton) {
     const credential = state.data.credentials.find((item) => item.id === Number(editCredentialButton.dataset.editCredential));
     if (credential) openModal('credential', credential);
+  }
+
+  const viewCredentialButton = event.target.closest('[data-view-credential]');
+  if (viewCredentialButton) {
+    try {
+      const credential = await api(`/v1/smtp/credentials/${viewCredentialButton.dataset.viewCredential}`);
+      showCredentialResult({ credential });
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+
+  const detailButton = event.target.closest('[data-message-detail]');
+  if (detailButton) {
+    try {
+      const detail = await api(`/v1/messages/${detailButton.dataset.messageDetail}`);
+      showMessageDetail(detail);
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+
+  const copyButtonElement = event.target.closest('[data-copy]');
+  if (copyButtonElement) {
+    try {
+      await navigator.clipboard.writeText(copyButtonElement.dataset.copy);
+      toast('已复制');
+    } catch {
+      toast('浏览器未允许复制');
+    }
+  }
+
+  const copyCredentialButton = event.target.closest('[data-copy-credential]');
+  if (copyCredentialButton) {
+    try {
+      const credential = await api(`/v1/smtp/credentials/${copyCredentialButton.dataset.copyCredential}`);
+      if (!credential.password) throw new Error('该 Key 尚未生成可查看值，请先轮换 Key');
+      await navigator.clipboard.writeText(credential.password);
+      toast('API Key 已复制');
+    } catch (error) {
+      toast(error.message);
+    }
   }
 
   const smtpTestButton = event.target.closest('[data-smtp-test]');
@@ -457,6 +543,13 @@ document.body.addEventListener('click', async (event) => {
       toast(error.message);
     }
   }
+});
+
+document.body.addEventListener('change', (event) => {
+  const select = event.target.closest('[data-custom-select]');
+  if (!select) return;
+  const input = document.getElementById(select.dataset.customSelect);
+  if (input) input.hidden = select.value !== '__custom__';
 });
 
 $('#refresh').addEventListener('click', load);

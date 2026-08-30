@@ -200,9 +200,13 @@ func TestManagementAPIAndSMTPTest(t *testing.T) {
 	}
 
 	response = jsonRequest(handler, http.MethodPut, "/mail2bark/v1/smtp/credentials/"+strconv.FormatInt(credential.ID, 10),
-		`{"name":"renamed","allowed_ips":["203.0.113.8"],"destination_id":`+strconv.FormatInt(destination.ID, 10)+`,"enabled":true}`)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"203.0.113.8/32"`) {
+		`{"name":"renamed","allowed_ips":[],"destination_id":`+strconv.FormatInt(destination.ID, 10)+`,"enabled":true}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"0.0.0.0/0"`) {
 		t.Fatalf("credential update failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = jsonRequest(handler, http.MethodGet, "/mail2bark/v1/smtp/credentials/"+strconv.FormatInt(credential.ID, 10), "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"password":"`) || !strings.Contains(response.Body.String(), credential.Recipients[0]) {
+		t.Fatalf("credential detail cannot be viewed: status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	response = jsonRequest(handler, http.MethodPost, "/mail2bark/v1/smtp/credentials/"+strconv.FormatInt(credential.ID, 10)+"/rotate", "{}")
@@ -231,6 +235,10 @@ func TestManagementAPIAndSMTPTest(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &testResult); err != nil || testResult.MessageID == 0 {
 		t.Fatalf("invalid SMTP test response: %s", response.Body.String())
+	}
+	response = jsonRequest(handler, http.MethodGet, "/mail2bark/v1/messages/"+strconv.FormatInt(testResult.MessageID, 10), "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"delivery test"`) || !strings.Contains(response.Body.String(), `"alert"`) {
+		t.Fatalf("message detail failed: status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	response = jsonRequest(handler, http.MethodDelete, "/mail2bark/v1/smtp/credentials/"+strconv.FormatInt(credential.ID, 10), "")
