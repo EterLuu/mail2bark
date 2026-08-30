@@ -245,7 +245,18 @@ func TestManagementAPIAndSMTPTest(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("pending credential deletion status = %d", response.Code)
 	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE messages SET status='processing' WHERE id=?`, testResult.MessageID); err != nil {
+		t.Fatal(err)
+	}
+	response = jsonRequest(handler, http.MethodDelete, "/mail2bark/v1/messages/"+strconv.FormatInt(testResult.MessageID, 10), "")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("processing message deletion status = %d body=%s", response.Code, response.Body.String())
+	}
 	store.MarkDelivered(ctx, testResult.MessageID)
+	response = jsonRequest(handler, http.MethodDelete, "/mail2bark/v1/messages/"+strconv.FormatInt(testResult.MessageID, 10), "")
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("message deletion failed: status=%d body=%s", response.Code, response.Body.String())
+	}
 	response = jsonRequest(handler, http.MethodDelete, "/mail2bark/v1/smtp/credentials/"+strconv.FormatInt(credential.ID, 10), "")
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("credential deletion failed: status=%d body=%s", response.Code, response.Body.String())

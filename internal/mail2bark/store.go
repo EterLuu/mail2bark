@@ -23,6 +23,7 @@ var (
 	errNotFound          = errors.New("not found")
 	errCredentialPending = errors.New("credential has pending messages")
 	errDestinationInUse  = errors.New("destination is referenced by credentials")
+	errMessageProcessing = errors.New("message is currently processing")
 )
 
 func (s *Store) Migrate(ctx context.Context) error {
@@ -413,6 +414,23 @@ func (s *Store) GetMessageDetail(ctx context.Context, id int64) (map[string]any,
 		"created_at": createdAt.Time, "delivered_at": deliveredAt.Time,
 		"alert": alert, "raw": string(raw),
 	}, nil
+}
+
+func (s *Store) DeleteMessage(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE id=? AND status!='processing'`, id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected > 0 {
+		return nil
+	}
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM messages WHERE id=?`, id).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return errNotFound
+	} else if err != nil {
+		return err
+	}
+	return errMessageProcessing
 }
 
 func (s *Store) RetryMessage(ctx context.Context, id int64) error {

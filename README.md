@@ -19,6 +19,8 @@ docker compose up -d --build
 
 打开 `http://127.0.0.1:8080/` 进入管理界面。默认不启用登录，适合内网部署；如果服务需要暴露到公网，请设置 `MAIL2BARK_ADMIN_KEY`，并同时使用防火墙或反向代理限制访问。
 
+`main` 分支推送后会发布 `ghcr.io/eterluu/mail2bark:latest` 和形如 `r260716.095432` 的新加坡时间标签。GHCR 自动保留最近 5 个容器版本并删除更旧版本。
+
 ## 配置发送来源
 
 先在 iPhone 上安装 Bark App，打开后复制自己的 Device Key。
@@ -129,6 +131,7 @@ example.com {
 
 - `GET /v1/messages`：查看最近邮件及投递状态
 - `GET /v1/messages/{id}`：查看邮件详情、解析结果和原始邮件
+- `DELETE /v1/messages/{id}`：删除非投递中的邮件
 - `POST /v1/messages/{id}/retry`：重新投递死信
 - `GET/POST /v1/smtp/credentials`：查看或创建接入 API Key
 - `GET /v1/smtp/credentials/{id}`：查看接入配置和当前 API Key

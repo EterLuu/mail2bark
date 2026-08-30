@@ -74,8 +74,13 @@ function statusBadge(status) {
   return `<span class="pill pill-${esc(status)}">${esc(statusText[status] || status)}</span>`;
 }
 
-function copyButton(value, label = '复制') {
-  return `<button class="copy-btn" type="button" data-copy="${esc(value)}" title="复制">${label}</button>`;
+function copyButton(value) {
+  return `<button class="copy-btn" type="button" data-copy="${esc(value)}" title="复制" aria-label="复制"><span aria-hidden="true">⧉</span></button>`;
+}
+
+function copyValue(value, fallback = '-') {
+  const display = value || fallback;
+  return `<span class="copy-value"><span class="copy-text">${esc(display)}</span>${value ? copyButton(value) : ''}</span>`;
 }
 
 function tableRows(element, rows, columns, emptyText = '暂无数据') {
@@ -117,7 +122,7 @@ function render() {
     messages.slice(0, 6),
     [
       (message) => `<td class="subject">${esc(message.subject || '（无主题）')}</td>`,
-      (message) => `<td>${esc(message.to)} ${copyButton(message.to)}</td>`,
+      (message) => `<td>${copyValue(message.to)}</td>`,
       (message) => `<td>${statusBadge(message.status)}</td>`,
       (message) => `<td>${message.attempts}</td>`,
       (message) => `<td class="muted">${formatTime(message.created_at)}</td>`,
@@ -131,13 +136,13 @@ function render() {
     [(message) => [
       `<td class="subject"><button class="action-link subject-link" data-message-detail="${message.id}">${esc(message.subject || '（无主题）')}</button></td>`,
       `<td class="muted">${esc(message.from || '-')}</td>`,
-      `<td>${esc(message.to)} ${copyButton(message.to)}</td>`,
+      `<td>${copyValue(message.to)}</td>`,
       `<td>${statusBadge(message.status)}</td>`,
       `<td>${message.attempts}</td>`,
       `<td class="muted">${formatTime(message.created_at)}</td>`,
       `<td><div class="row-actions"><button class="action-link" data-message-detail="${message.id}">详情</button>${['dead_letter', 'ignored'].includes(message.status)
         ? `<button class="action-link" data-retry="${message.id}">重新投递</button>`
-        : ''}</div></td>`,
+        : ''}<button class="action-link danger" data-delete-message="${message.id}"${message.status === 'processing' ? ' disabled' : ''}>删除</button></div></td>`,
     ]],
     '还没有收到邮件',
   );
@@ -149,9 +154,9 @@ function render() {
       const destination = destinations.find((item) => item.id === credential.destination_id);
       return [
         `<td class="subject">${esc(credential.name)}</td>`,
-        `<td class="mono">mail2bark ${copyButton('mail2bark')}</td>`,
+        `<td class="mono">${copyValue('mail2bark')}</td>`,
         `<td>${credential.allowed_ips.map(esc).join('<br>')}</td>`,
-        `<td>${credential.recipients.map((recipient) => `${esc(recipient)} ${copyButton(recipient)}`).join('<br>')}</td>`,
+        `<td>${credential.recipients.map((recipient) => copyValue(recipient)).join('<br>')}</td>`,
         `<td>${esc(destination?.name || '所有启用设备')}</td>`,
         `<td>${credential.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="pill pill-ignored">已停用</span>'}</td>`,
       `<td><div class="row-actions">
@@ -172,7 +177,7 @@ function render() {
     destinations,
     [(destination) => [
       `<td class="subject">${esc(destination.name)}</td>`,
-      `<td class="muted">${esc(destination.server)} ${copyButton(destination.server)}</td>`,
+      `<td class="muted">${copyValue(destination.server)}</td>`,
       `<td>${esc(destination.group || '-')}</td>`,
       `<td>${esc(destination.level || '-')}</td>`,
       `<td>${destination.enabled ? '<span class="pill pill-delivered">使用中</span>' : '<span class="pill pill-ignored">已停用</span>'}</td>`,
@@ -402,8 +407,8 @@ function showMessageDetail(detail) {
     <div class="modal-head"><div><p class="eyebrow">邮件详情</p><h2>${esc(detail.subject || '（无主题）')}</h2></div><button type="button" class="icon-btn" aria-label="关闭">×</button></div>
     <div class="modal-body detail-body">
       <dl class="message-detail">
-        <div><dt>发件地址</dt><dd>${esc(detail.from || '-')} ${copyButton(detail.from || '')}</dd></div>
-        <div><dt>收件地址</dt><dd>${esc(detail.to || '-')} ${copyButton(detail.to || '')}</dd></div>
+        <div><dt>发件地址</dt><dd>${copyValue(detail.from)}</dd></div>
+        <div><dt>收件地址</dt><dd>${copyValue(detail.to)}</dd></div>
         <div><dt>解析级别</dt><dd>${esc(alert.severity || '-')}</dd></div>
         <div><dt>设备</dt><dd>${esc(alert.device || '-')}</dd></div>
         <div><dt>组件</dt><dd>${esc(alert.component || '-')}</dd></div>
@@ -538,6 +543,17 @@ document.body.addEventListener('click', async (event) => {
     try {
       await api(`/v1/messages/${retryButton.dataset.retry}/retry`, { method: 'POST' });
       toast('已重新加入投递队列');
+      await load();
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+
+  const deleteMessageButton = event.target.closest('[data-delete-message]');
+  if (deleteMessageButton && window.confirm('删除后无法恢复，确定删除这封邮件吗？')) {
+    try {
+      await api(`/v1/messages/${deleteMessageButton.dataset.deleteMessage}`, { method: 'DELETE' });
+      toast('邮件已删除');
       await load();
     } catch (error) {
       toast(error.message);

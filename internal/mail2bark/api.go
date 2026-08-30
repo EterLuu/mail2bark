@@ -423,6 +423,8 @@ func (a *API) storeError(w http.ResponseWriter, err error) {
 		jsonResponse(w, http.StatusConflict, map[string]string{"error": "该 Key 仍有待处理邮件，暂时不能删除"})
 	case errors.Is(err, errDestinationInUse):
 		jsonResponse(w, http.StatusConflict, map[string]string{"error": "该 Bark 设备仍被接入 Key 使用，请先修改绑定"})
+	case errors.Is(err, errMessageProcessing):
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "邮件正在投递，暂时不能删除"})
 	default:
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -447,6 +449,19 @@ func (a *API) messageAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 3 && parts[0] == "v1" && parts[1] == "messages" && r.Method == http.MethodDelete {
+		id, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if err := a.Store.DeleteMessage(r.Context(), id); err != nil {
+			a.storeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if len(parts) == 3 && parts[0] == "v1" && parts[1] == "messages" && r.Method == http.MethodGet {
 		id, err := strconv.ParseInt(parts[2], 10, 64)
 		if err != nil {
