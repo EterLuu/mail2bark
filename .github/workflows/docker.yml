@@ -75,10 +75,12 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Remove old container versions
+      - name: Remove old multi-platform releases
         if: github.event_name == 'push'
         uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
           package-name: ${{ github.event.repository.name }}
           package-type: container
-          min-versions-to-keep: 5
+          # Each release consists of one tagged index plus the required
+          # untagged amd64 and arm64 manifests.
+          min-versions-to-keep: 3
